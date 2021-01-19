@@ -1,0 +1,72 @@
+Problem
+SQL Server Enterprise Manager and Management Studio are pretty good tools for giving you information about a particular object, but when you want to get information across your entire database or server this becomes a bit of a challenge.  There are several system stored procedures and now dynamic management views in SQL Server to provide some of the information, but there is still a bit of missing functionality if you want to get data across the database or server. One of these recent challenges was getting foreign key information across the entire database.  Management Studio has some nice additions where you can see the FK constraints on a table by table basis, but getting all of the foreign keys is a bit more a challenge.  There is a stored procedure called sp_fkeys, but this procedure requires you to include at least the primary key table name.  So how can you get a complete list?
+Solution
+There is a wealth of information in the system stored procedures and this is another good way of learning how things work behind the scenes.  By taking a look at the stored procedure sp_fkeys for SQL Server I noticed that it is not very complicated at all. When you pass in the parameters it basically uses the parameters to filter your selection.  By making a minor tweak to the SELECT statement we are able to get a list of all FKs in the entire database.  Here is the modified query for SQL Server 2005 and later.
+SQL Server List Foreign Keys - Version 1
+SELECT PKTABLE_QUALIFIER = CONVERT(SYSNAME,DB_NAME()), 
+       PKTABLE_OWNER = CONVERT(SYSNAME,SCHEMA_NAME(O1.SCHEMA_ID)), 
+       PKTABLE_NAME = CONVERT(SYSNAME,O1.NAME), 
+       PKCOLUMN_NAME = CONVERT(SYSNAME,C1.NAME), 
+       FKTABLE_QUALIFIER = CONVERT(SYSNAME,DB_NAME()), 
+       FKTABLE_OWNER = CONVERT(SYSNAME,SCHEMA_NAME(O2.SCHEMA_ID)), 
+       FKTABLE_NAME = CONVERT(SYSNAME,O2.NAME), 
+       FKCOLUMN_NAME = CONVERT(SYSNAME,C2.NAME), 
+       -- Force the column to be non-nullable (see SQL BU 325751) 
+       --KEY_SEQ             = isnull(convert(smallint,k.constraint_column_id), sysconv(smallint,0)), 
+       UPDATE_RULE = CONVERT(SMALLINT,CASE OBJECTPROPERTY(F.OBJECT_ID,'CnstIsUpdateCascade')  
+                                        WHEN 1 THEN 0 
+                                        ELSE 1 
+                                      END), 
+       DELETE_RULE = CONVERT(SMALLINT,CASE OBJECTPROPERTY(F.OBJECT_ID,'CnstIsDeleteCascade')  
+                                        WHEN 1 THEN 0 
+                                        ELSE 1 
+                                      END), 
+       FK_NAME = CONVERT(SYSNAME,OBJECT_NAME(F.OBJECT_ID)), 
+       PK_NAME = CONVERT(SYSNAME,I.NAME), 
+       DEFERRABILITY = CONVERT(SMALLINT,7)   -- SQL_NOT_DEFERRABLE 
+FROM   SYS.ALL_OBJECTS O1, 
+       SYS.ALL_OBJECTS O2, 
+       SYS.ALL_COLUMNS C1, 
+       SYS.ALL_COLUMNS C2, 
+       SYS.FOREIGN_KEYS F 
+       INNER JOIN SYS.FOREIGN_KEY_COLUMNS K 
+         ON (K.CONSTRAINT_OBJECT_ID = F.OBJECT_ID) 
+       INNER JOIN SYS.INDEXES I 
+         ON (F.REFERENCED_OBJECT_ID = I.OBJECT_ID 
+             AND F.KEY_INDEX_ID = I.INDEX_ID) 
+WHERE  O1.OBJECT_ID = F.REFERENCED_OBJECT_ID 
+       AND O2.OBJECT_ID = F.PARENT_OBJECT_ID 
+       AND C1.OBJECT_ID = F.REFERENCED_OBJECT_ID 
+       AND C2.OBJECT_ID = F.PARENT_OBJECT_ID 
+       AND C1.COLUMN_ID = K.REFERENCED_COLUMN_ID
+       AND C2.COLUMN_ID = K.PARENT_COLUMN_ID
+SQL Server List Foreign Keys - Version 2
+This is another version that was contributed by one of our readers Troy Ketsdever.  This uses the INFORMATION_SCHEMA views.
+SELECT C.TABLE_CATALOG [PKTABLE_QUALIFIER], 
+       C.TABLE_SCHEMA [PKTABLE_OWNER], 
+       C.TABLE_NAME [PKTABLE_NAME], 
+       KCU.COLUMN_NAME [PKCOLUMN_NAME], 
+       C2.TABLE_CATALOG [FKTABLE_QUALIFIER], 
+       C2.TABLE_SCHEMA [FKTABLE_OWNER], 
+       C2.TABLE_NAME [FKTABLE_NAME], 
+       KCU2.COLUMN_NAME [FKCOLUMN_NAME], 
+       RC.UPDATE_RULE, 
+       RC.DELETE_RULE, 
+       C.CONSTRAINT_NAME [FK_NAME], 
+       C2.CONSTRAINT_NAME [PK_NAME], 
+       CAST(7 AS SMALLINT) [DEFERRABILITY] 
+FROM   INFORMATION_SCHEMA.TABLE_CONSTRAINTS C 
+       INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE KCU 
+         ON C.CONSTRAINT_SCHEMA = KCU.CONSTRAINT_SCHEMA 
+            AND C.CONSTRAINT_NAME = KCU.CONSTRAINT_NAME 
+       INNER JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS RC 
+         ON C.CONSTRAINT_SCHEMA = RC.CONSTRAINT_SCHEMA 
+            AND C.CONSTRAINT_NAME = RC.CONSTRAINT_NAME 
+       INNER JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS C2 
+         ON RC.UNIQUE_CONSTRAINT_SCHEMA = C2.CONSTRAINT_SCHEMA 
+            AND RC.UNIQUE_CONSTRAINT_NAME = C2.CONSTRAINT_NAME 
+       INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE KCU2 
+         ON C2.CONSTRAINT_SCHEMA = KCU2.CONSTRAINT_SCHEMA 
+            AND C2.CONSTRAINT_NAME = KCU2.CONSTRAINT_NAME 
+            AND KCU.ORDINAL_POSITION = KCU2.ORDINAL_POSITION 
+WHERE  C.CONSTRAINT_TYPE = 'FOREIGN KEY'
